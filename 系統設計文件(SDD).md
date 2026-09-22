@@ -28,8 +28,10 @@ title: 系統設計文件(SDD)
 | 0.8 | I4 設計細節 | 2026/08/11 |
 | 0.8.1 | I5 流程優化 | 2026/08/12 |
 | 0.9 | I5 設計細節 | 2026/08/12 |
-| 1.0 | I6 協助掛號優化與 I7風險警示 | 2026/09/12 |
+| 1.0 | I6 協助掛號優化(推薦科別)與 I7風險警示 | 2026/09/12 |
 | 1.1 | 補充 I7 日常健康、用藥安全、主動照護與家庭安全設計 | 2026/09/17 |
+| 1.2 | 補充協助掛號優化(推薦科別)流程圖與補上參考症狀科別表之來源 | 2026/09/17 |
+
 ---
 
 ## 目錄
@@ -424,6 +426,41 @@ flowchart TD
 
 #### 使用者摘要產生流程:
 ![MOHW CDC TFDA RAG Platform-2026-06-16-133007](https://hackmd.io/_uploads/B1AAbR0Zfg.png)
+#### RAG與闢謠流程
+```mermaid
+flowchart TD
+    A[使用者輸入] --> B{輸入類型}
+    B -- 文字 --> C[辨識意圖]
+    B -- 多媒體訊息 --> D[辨識與文字擷取]
+    D --> C
+
+    C -- 一般醫療知識 --> E{允許查詢}
+    E -- 是 --> F[RAG 檢索]
+    F --> G[資料排序與答案生成]
+    G --> H[附加來源引用]
+    H --> I[RAG 回答卡]
+    E -- 否 --> J[一般回覆或婉拒]
+
+    C -- 特定真假主張 --> K[闢謠查核]
+    C -- 電視新聞畫面 --> K
+    K --> L{找到既有查核}
+    L -- 是 --> M[判定與查核來源]
+    L -- 否 --> N[證據不足與相關衛教]
+    M --> O[闢謠判定卡]
+    N --> O
+
+    C -- 一般圖片內容 --> P[直接解讀圖片]
+    P --> Q[純文字或表格卡]
+
+    I --> R{卡片可正常產生}
+    O --> R
+    R -- 是 --> S[Flex Message]
+    R -- 否 --> T[純文字保底]
+    J --> U[LINE 回覆]
+    Q --> U
+    S --> U
+    T --> U
+```
 
 #### medical service主流程
     
@@ -543,9 +580,8 @@ flowchart TD
     
 ```mermaid
 flowchart TD
-    ToolDept["ToolDept"] --> Dept["科別解析"]
-    Dept --> Combine["科別＋院所類型條件"]
-    Combine --> OpenNow{"是否要求看診中？"}
+    
+    Combine["科別＋院所類型條件"] --> OpenNow{"是否要求看診中？"}
     OpenNow -->|是| FilterOpen["篩選看診狀態"]
     OpenNow -->|否| ResolveTier["決定搜尋距離"]
 
@@ -559,7 +595,8 @@ flowchart TD
     NearbyCount -->|無| NoNearby["查無附近醫療院所"]
     NearbyCount -->|有| NearbyCarousel["附近院所列表"]
 ```
-    
+
+#### 輸入症狀推薦科別流程    
 ```mermaid
 flowchart TD
     U["使用者訊息：我肚子痛要掛哪一科"] --> EMG{"是否判定為緊急？"}
@@ -780,7 +817,8 @@ graph TD
 ```
     
 ## <span id="section4">4. 使用者畫面設計 (User Interface Design)</span>
-### rich menu
+### Rich menu
+![rich_menu_zh-TW](https://hackmd.io/_uploads/ryJQEYKKMx.png)
 
 
 
@@ -1041,8 +1079,32 @@ classDiagram
 ---
 #### 產生摘要
 * 使用scheduler搭配lifespan定時產生摘要
-* 尋找當天的對話紀錄並傳給gemini產生摘要
+* 尋找當天的對話紀錄、用藥、掛號紀錄、風險警示並傳給gemini產生摘要
+* 明確定義摘要各個欄位的含意，同時篩選送入摘要的內容
 * 摘要最多存20筆，新的摘要會將最舊的摘要擠掉
+* 
+#### 風險警示
+* 偵測到如:我要跳樓、我出車禍、我阿公跌倒等危及事件時觸發
+* 回傳帶有110 119電話的Flex Message
+* 同時回報給家屬
+
+#### 症狀科別推薦
+* 症狀、科別表放在`symptom_department_reference.json`內
+* 原始資料經過修正錯字、合併現有病症、過濾檢查、諮詢相關服務後才寫入
+* 目前包含以下院所的資料:
+    - [臺北榮民總醫院玉里分院](https://org.vghtpe.gov.tw/vhyl/freePage/93/315)
+    - [成大醫院](https://nckuh.hosp.ncku.edu.tw/p/405-1000-255958,c29453.php)
+    - [臺大醫院雲林分院](https://www.ylh.gov.tw/?aid=302)
+    - [臺北榮民總醫院新竹分院](https://org.vghtpe.gov.tw/vhct/dept/113/79)
+    - [國軍高雄總醫院](https://802.mnd.gov.tw/articles/consultation-reference)
+    - [天主教耕莘醫療財團法人耕莘醫院](https://webreg.cth.org.tw/CthWebReg/WebReg/condition_query.aspx)
+    - [國軍桃園總醫院](https://www.aftygh.gov.tw/guide/cate1/sn2/)
+    - [中國醫藥大學新竹附設醫院](https://www.cmu-hch.cmu.edu.tw/Department/Guide)
+    - [馬偕紀念醫院](https://www.mmh.org.tw/find_symptom.php)
+    - [佛教慈濟醫療財團法人花蓮慈濟醫院](https://hlm.tzuchi.com.tw/home/index.php/guide/disease)
+
+
+
 ---
 #### RAG
 * 回覆內容應附上來源名稱與原始連結，供使用者追溯與查證
