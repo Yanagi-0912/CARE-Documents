@@ -31,6 +31,7 @@ title: 系統設計文件(SDD)
 | 1.0 | I6 協助掛號優化(推薦科別)與 I7風險警示 | 2026/09/12 |
 | 1.1 | 補充 I7 日常健康、用藥安全、主動照護與家庭安全設計 | 2026/09/17 |
 | 1.2 | 補充協助掛號優化(推薦科別)流程圖與補上參考症狀科別表之來源 | 2026/09/17 |
+| 1.3 | 同步 I7 健康紀錄：提醒範圍、PERSONAL 經期、前景計步、健康警示與嚴格 RBAC | 2026/10/02 |
 
 ---
 
@@ -332,7 +333,19 @@ flowchart TB
 ## 家庭功能相關（既有介面新增欄位）
 | 介面名稱 | 介面提供者 | 介面使用者 | 連結方式 | 輸入資料 | 輸出資料 | 介面描述 | 錯誤處理 |
 | -------- | ---------- | ---------- | -------- | -------- | -------- | -------- | -------- |
-| 取得族譜（新增嚴格權限欄位） | CARE 後端 | LIFF 前端 | GET `/api/family/me` | `Header: Authorization (Bearer Token，取自 CARE_AUTH_TOKEN)` | `GetFamilyTreeResponse`；`family_members[]` 新增 `my_strict_permissions: { general, sensitive, private }`，形狀與 `my_permissions` 相同 | 純角色權限（含委任），不受影響模式影響。前端只用它判斷掛號的新增、修改、取消、刪除與回報按鈕要不要顯示；其他功能仍看 `my_permissions` | 沿用既有處理；欄位缺席時一律視為沒有權限（不顯示掛號寫入按鈕） |
+| 取得族譜（新增嚴格權限欄位） | CARE 後端 | LIFF 前端 | GET `/api/family/me` | `Header: Authorization (Bearer Token，取自 CARE_AUTH_TOKEN)` | `GetFamilyTreeResponse`；`family_members[]` 含 `my_strict_permissions: { general, sensitive, private }`，形狀與 `my_permissions` 相同 | 純角色權限（含委任），不受 shadow 影響。前端以此判斷掛號寫入及健康紀錄讀寫入口；PERSONAL 不列於描述欄位，經期另以本人身分限制 | 欄位缺席時一律 fail-closed，不顯示操作入口，也不發出受保護資料請求 |
+
+## 健康紀錄相關
+
+| 介面名稱 | 方法與路徑 | 輸入／輸出 | 權限與行為 | 主要錯誤 |
+| --- | --- | --- | --- | --- |
+| 取得／更新提醒範圍 | GET／PUT `/api/health/alert-thresholds` | 血壓上下限、空腹／非空腹血糖上限及共用下限 | 本人；他人須嚴格 SENSITIVE READ／WRITE。系統不提供預設醫療門檻 | 403、422 |
+| 新增量測 | POST `/api/health/measurements` | 血壓或血糖 request；回傳含 `level`、`recorded_by` 的量測 | 本人或嚴格 SENSITIVE WRITE；存檔時依當下門檻判定等級 | 403、422 |
+| 查詢量測 | GET `/api/health/measurements` | `kind`、期間；預設 30 天、由新到舊、最多 200 筆 | 本人或嚴格 SENSITIVE READ | 403、422 |
+| 刪除量測 | DELETE `/api/health/measurements/{id}` | 無內容回應 | 本人或嚴格 SENSITIVE WRITE | 403、404 |
+| 經期紀錄 | POST／GET `/api/health/menstrual`；PATCH／DELETE `/api/health/menstrual/{id}` | 開始／結束日、流量、備註；回應含計算後週期與天數 | 僅性別為女性的本人；任何他人一律拒絕 | 403、409、422 |
+| 同步計步工作階段 | PUT `/api/health/steps/sessions/{session_id}` | 工作階段累計步數與開始時間；回傳每日彙總 | 僅本人；以最大累計值冪等更新 | 403、422 |
+| 查詢每日步數 | GET `/api/health/steps` | 日期範圍；回傳每日 `{user_id, date, steps}` | 本人或嚴格 SENSITIVE READ | 403、422 |
  
     
 # n8n workflow相關介面
@@ -842,11 +855,55 @@ graph TD
 ![單一院所](https://hackmd.io/_uploads/Hy5XPwtIfl.jpg)
 ![單一院所2](https://hackmd.io/_uploads/r1qmDvFIMe.jpg)
 
-#### 日常健康紀錄與趨勢（Iteration 7 規劃）
+#### 日常健康紀錄（Iteration 7 已實作範圍）
 
-* 提供血壓、血糖及體重等健康指標的新增與歷史紀錄查詢。
-* 趨勢畫面可選擇指標與日期範圍，並以圖表搭配數值清單呈現。
-* 輸入欄位應顯示單位、合理範圍與格式錯誤提示，避免誤植數值。
+細部欄位、權限及邊界另見 [Iteration 7 健康紀錄模組技術文件](<./Iteration%207健康紀錄模組技術文件.md>)。
+
+* 血壓紀錄包含收縮壓、舒張壓、選填脈搏及量測時間；血糖包含數值、量測情境及量測時間。每筆保存資料本人、實際記錄者與記錄當下的等級。
+* 本人或具嚴格 SENSITIVE WRITE 的 GUARDIAN 可新增／刪除量測；本人、GUARDIAN、CAREGIVER 可讀，MEMBER 不可存取。所有健康新端點以 `has_legacy_equivalent=false` 判定，shadow 不放寬。
+* 查詢未指定期間時預設最近 30 天、由新到舊，單次最多 200 筆。現有 UI 以時間清單呈現；體重時間序列與獨立趨勢圖尚未實作。
+
+#### 自訂提醒範圍與健康警示
+
+* 系統不內建醫療門檻；本人或 GUARDIAN 可設定／清除收縮壓、舒張壓及血糖上下限。同組上下限均有值時，上限必須大於下限。
+* 新增量測時由後端唯一判定 `above_range`、`below_range`、`within_range` 或 `no_threshold` 並保存；門檻改變不回寫歷史，前端直接呈現後端結果。
+* `HEALTH_ALERTS_ENABLED` 預設關閉。啟用後只對超限且非 6 小時前補記的量測推播，同類警示 30 分鐘節流；通知本人與合格 GUARDIAN／CAREGIVER，並套用收件人偏好。
+
+#### 經期紀錄與 PERSONAL 資料
+
+* 經期紀錄僅限性別為女性的本人，開始日必填、結束日選填且可事後修改；紀錄不得重疊，週期與經期天數於回應時動態計算。
+* 經期所有欄位分類為 PERSONAL。Router 先拒絕任何他人識別碼，再以欄位分類作第二道保護；家庭元件不接受經期查詢對象。
+* 週期小於 24 天、大於 38 天或經期超過 8 天時只通知本人；同一紀錄最多一次，鎖定畫面通知不顯示敏感字詞與數值。
+
+#### LIFF 前景計步
+
+* 計步須由本人明確操作觸發動作感測授權，只在 LIFF 前景運作；背景前先 keepalive 同步並暫停，回到前景延續。
+* 前端每 30 秒送出工作階段累計值；後端以 `$max` 冪等保存。跨 Asia/Taipei 午夜時結束舊工作階段並建立新工作階段。
+* 只有本人可回報步數；本人、GUARDIAN、CAREGIVER 可嚴格讀取每日彙總。無紀錄顯示「尚無紀錄」，不得顯示為 0 步。
+
+```mermaid
+flowchart TD
+    A[新增血壓或血糖量測] --> B{本人或嚴格 SENSITIVE WRITE?}
+    B -- 否 --> X[403，不寫入]
+    B -- 是 --> C[讀取資料本人的提醒範圍]
+    C --> D[後端判定並保存 level 與 recorded_by]
+    D --> E[回應 201]
+    D --> F{警示開關啟用且超出範圍?}
+    F -- 否 --> Z[結束]
+    F -- 是 --> G{補記超過 6 小時或 30 分鐘內已通知?}
+    G -- 是 --> Z
+    G -- 否 --> H[通知本人與合格照顧者]
+```
+
+新增 collection：
+
+| Collection | 分類 | 設計重點 |
+| --- | --- | --- |
+| `health_measurements` | SENSITIVE | 血壓／血糖、`recorded_by`、歷史 `level`；索引 `(user_id, kind, measured_at desc)` |
+| `health_alert_thresholds` | SENSITIVE | 每位使用者一份可清除的自訂上下限，不存在即全部未設定 |
+| `menstrual_records` | PERSONAL | 僅本人，週期與天數不落地儲存 |
+| `step_sessions` | SENSITIVE | `(user_id, session_id)` 唯一，以最大累計值冪等同步 |
+| `health_alert_claims` | 內部控制資料 | 唯一索引與 TTL 實作跨程序通知節流 |
 
 #### 用藥提醒與藥袋辨識
 
@@ -1006,7 +1063,8 @@ classDiagram
 #### 個人健康
 * 透過liff取得user頭像和LINE暱稱
 * 透過CARE資料庫取得健康資料
-* 提供血壓、血糖及體重紀錄的新增、查詢與趨勢圖表
+* 提供血壓／血糖新增與歷史清單、自訂提醒範圍、女性本人經期紀錄及 LIFF 前景計步
+* 體重時間序列與獨立趨勢圖尚未實作，不得呈現為現有功能
 ---
 #### 個人諮詢紀錄
 * 可選擇摘要與對話顯示
@@ -1015,7 +1073,8 @@ classDiagram
 ---
 #### 設定頁面
 * 調整個人偏好設定（語言、字體大小）
-* 設定每日健康資訊的主題、推播時間與啟用狀態
+* 調整語音回覆、語速與音色，並以資料庫設定同步其他裝置
+* 每日健康資訊目前以全域 Asia/Taipei 09:00 排程發送給啟用訂閱者，尚不支援每位使用者自訂時間
 ---
 #### 家庭介面
 * 顯示有建立關係的成員及其健康狀態
@@ -1045,20 +1104,21 @@ classDiagram
   * 邀請者建立連結並發送給被邀請者
   * 被邀請者點擊連結與邀請者建立關係
 
-| 角色 | GENERAL | SENSITIVE | PRIVATE |
-|---|---|---|---|
-| `OWNER` | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 |
-| `GUARDIAN` | 讀 + 寫 | 讀 + 寫 | 讀 |
-| `CAREGIVER` | 讀 + 寫 | 讀 | — |
-| `MEMBER` | 讀 | — | — |
+| 角色 | GENERAL | SENSITIVE | PRIVATE | PERSONAL |
+|---|---|---|---|---|
+| `OWNER` | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 |
+| `GUARDIAN` | 讀 + 寫 | 讀 + 寫 | 讀 | — |
+| `CAREGIVER` | 讀 + 寫 | 讀 | — | — |
+| `MEMBER` | 讀 | — | — | — |
     
 * 資訊定義
     
 | 分類 | 資源 | 實際欄位 |
 |---|---|---|
 | `GENERAL` | 用藥提醒、藥品、身分欄位 | 吃藥時間、藥名、外觀、劑量、`name`、`picture_url` |
-| `SENSITIVE` | 健康檔案、藥品適應症 | 年齡、性別、身高體重、慢性病、重大疾病史、手術史、`indication` |
+| `SENSITIVE` | 健康檔案、藥品適應症、血壓血糖量測、提醒範圍、步數 | 年齡、性別、身高體重、病史、`indication`、量測與每日步數 |
 | `PRIVATE` | 對話摘要、原始對話 | 與 LINE 機器人的健康諮詢內容 |
+| `PERSONAL` | 經期紀錄 | 開始／結束日、流量、備註及計算後週期資訊；僅本人可存取 |
     
 [技術文件](https://hackmd.io/@NTOU-CARE/S11OiCwdMl)   
     

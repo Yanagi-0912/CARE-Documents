@@ -8,7 +8,8 @@ CARE 專案 — 以「角色 × 資料分類 × 動作」取代原本「在族�
 | 前端 repo | `C:\CARE-LIFF`，commit `f46ca1a` |
 | 後端技術 | Python 3.12 / FastAPI / Pydantic 2 / MongoDB (motor) |
 | 前端技術 | React 19 / TypeScript 5.9 / TanStack Query 5 / Vite |
-| 測試結果 | 後端 3221 passed、前端 303 passed |
+| 基礎 RBAC 測試結果 | 後端 3221 passed、前端 303 passed |
+| Iteration 7 健康擴充 | 新增 PERSONAL、血壓血糖量測、提醒範圍、經期與步數的嚴格權限；模組相關後端 324 筆、前端 121 筆通過 |
 
 ---
 
@@ -27,23 +28,39 @@ CARE 專案 — 以「角色 × 資料分類 × 動作」取代原本「在族�
 
 `OWNER` 之所以不落地：一個寫得進資料庫的 `OWNER` 等於可以讓渡資料所有權。模型層的驗證器與 repository 都各擋一次。
 
-### 1.2 三種資料分類
+### 1.2 四種資料分類
 
 | 分類 | 資源 | 實際欄位 |
 |---|---|---|
 | `GENERAL` | 用藥提醒、藥品、身分欄位 | 吃藥時間、藥名、外觀、劑量、`name`、`picture_url` |
-| `SENSITIVE` | 健康檔案、藥品適應症 | 年齡、性別、身高體重、慢性病、重大疾病史、手術史、`indication` |
+| `SENSITIVE` | 健康檔案、藥品適應症、健康量測、提醒範圍、步數 | 年齡、性別、身高體重、病史、`indication`、血壓血糖、上下限及每日步數 |
 | `PRIVATE` | 對話摘要、原始對話 | 與 LINE 機器人的健康諮詢內容 |
+| `PERSONAL` | 經期紀錄 | 開始／結束日、流量、備註及計算後週期資訊；只限本人 |
 
 ### 1.3 權限矩陣
 
-| 角色 | GENERAL | SENSITIVE | PRIVATE |
+| 角色 | GENERAL | SENSITIVE | PRIVATE | PERSONAL |
+|---|---|---|---|---|
+| `OWNER` | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 |
+| `GUARDIAN` | 讀 + 寫 | 讀 + 寫 | 讀 | — |
+| `CAREGIVER` | 讀 + 寫 | 讀 | — | — |
+| `MEMBER` | 讀 | — | — | — |
+| 不在族譜內 | — | — | — | — |
+
+### 1.4 Iteration 7 健康資源擴充
+
+本節與 [Iteration 7 健康紀錄模組技術文件](<./Iteration%207健康紀錄模組技術文件.md>) 使用相同資源分類與嚴格授權基線。
+
+| 資源 | 分類 | 讀取 | 寫入 |
 |---|---|---|---|
-| `OWNER` | 讀 + 寫 | 讀 + 寫 | 讀 + 寫 |
-| `GUARDIAN` | 讀 + 寫 | 讀 + 寫 | 讀 |
-| `CAREGIVER` | 讀 + 寫 | 讀 | — |
-| `MEMBER` | 讀 | — | — |
-| 不在族譜內 | — | — | — |
+| `health_measurement` | SENSITIVE | OWNER、GUARDIAN、CAREGIVER | OWNER、GUARDIAN |
+| `health_alert_threshold` | SENSITIVE | OWNER、GUARDIAN、CAREGIVER | OWNER、GUARDIAN |
+| `menstrual_record` | PERSONAL | 僅 OWNER | 僅 OWNER |
+| `step_count` | SENSITIVE | OWNER、GUARDIAN、CAREGIVER | 僅 OWNER |
+
+健康資源在導入前沒有 legacy 端點，因此一律以 `authorize(..., has_legacy_equivalent=False)` 判定，shadow 模式不得放寬。前端使用 `/api/family/me` 的 `my_strict_permissions` 顯示健康紀錄與代記入口；欄位缺席時 fail-closed，不退回 `my_permissions`。
+
+`PERSONAL` 不加入 `my_permissions` 或 `my_strict_permissions` 的 general／sensitive／private 描述物件。經期 Router 先直接比對操作者與資料本人，任何跨使用者請求均回 403；PERSONAL 欄位分類提供第二道遮蔽保護。有效委任者亦不得取得 PERSONAL。
 
 ---
 
