@@ -32,6 +32,7 @@ title: 系統設計文件(SDD)
 | 1.1 | 補充 I7 日常健康、用藥安全、主動照護與家庭安全設計 | 2026/09/17 |
 | 1.2 | 補充協助掛號優化(推薦科別)流程圖與補上參考症狀科別表之來源 | 2026/09/17 |
 | 1.3 | 同步 I7 健康紀錄：提醒範圍、PERSONAL 經期、前景計步、健康警示與嚴格 RBAC | 2026/10/02 |
+| 1.4 | 校正並補齊目前架構、健康、用藥、緊急通報、醫療資源與防走失流程圖 | 2026/10/02 |
 
 ---
 
@@ -197,6 +198,53 @@ flowchart TB
 
     User --> LINE
     LINE --> Kong
+```
+
+### Iteration 7 目前整合架構
+
+前述 MVP、Iteration 2 與 Iteration 3 圖保留歷史演進；下圖為本文件目前功能的整合視圖。
+
+```mermaid
+flowchart LR
+    User([使用者與家庭照顧者]) --> LINE[LINE Messaging API]
+    User --> LIFF[LIFF React 前端]
+    LINE --> Gateway[API Gateway／Webhook]
+    LIFF --> Gateway
+
+    subgraph Backend[CARE FastAPI]
+        Auth[認證與使用者設定]
+        Conversation[AI 對話與意圖分流]
+        Health[健康紀錄、提醒範圍、經期、步數]
+        Medication[用藥、藥袋草稿與提醒]
+        Medical[醫療資源與掛號導引]
+        Family[家庭關係、RBAC、委任與定位]
+        Notification[LINE 通知與排程]
+    end
+
+    Gateway --> Auth
+    Gateway --> Conversation
+    Gateway --> Health
+    Gateway --> Medication
+    Gateway --> Medical
+    Gateway --> Family
+
+    Conversation --> RAG[RAG／可信資料檢索]
+    Conversation --> Media[OCR／ASR／文件解析]
+    RAG --> AI[生成模型]
+    Media --> Conversation
+
+    Health --> DB[(MongoDB)]
+    Medication --> DB
+    Medical --> DB
+    Family --> DB
+    Auth --> DB
+
+    Health --> Notification
+    Medication --> Notification
+    Family --> Notification
+    Notification --> LINE
+    Medical --> External[地圖、撥號與院所外部掛號]
+    Family --> Device[裝置定位與動作感測器]
 ```
 
 ## <span id="section2">2. 介面需求與設計 (Interface Requirement and Design)</span>
@@ -495,6 +543,21 @@ flowchart TD
     ToolDecision -->|附近＋科別| ToolDept["findearby_facilities_by_department"]
     ToolDecision -->|需要位置| ToolReqLoc["要求使用者分享位置"]
     PostbackHandler --> Detail["取得院所詳細資料"]
+    LookupMedicalFacility --> SearchResult{"是否有符合院所?"}
+    FindNearbyHospital --> SearchResult
+    ToolDept --> SearchResult
+    ToolReqLoc --> LocationReply["說明定位用途並等待位置"]
+    LocationReply --> LocationHandler
+    SearchResult -->|否| Empty["回覆查無結果或搜尋失敗"]
+    SearchResult -->|是| Cards["顯示院所清單、距離與看診狀態"]
+    Cards --> Detail
+    Detail --> Actions{"使用者下一步"}
+    Actions -->|撥號| Dial["開啟裝置撥號介面"]
+    Actions -->|掛號| Register["開啟院所外部掛號入口"]
+    Actions -->|查看完成| Done(["完成查詢"])
+    Dial --> Done
+    Register --> Done
+    Empty --> Done
 ```
      
 #### lookup_medical_facility流程 
@@ -691,8 +754,16 @@ flowchart TD
     I --> J{用藥者是否點擊按鈕?}
     
     J -->|是| F
-    J -->|否 逾時30分鐘| K[T+30min push_flex 推播家屬關心提醒卡片]
-    K --> L[更新日誌狀態為逾時未用藥 missed]
+    J -->|否 逾時30分鐘| L[更新日誌狀態為逾時未用藥 missed]
+    L --> K{用藥逾時通知政策與用藥者設定是否允許?}
+    K -->|否| End([結束，不宣稱已通知])
+    K -->|是| Recipients[解析合格 GUARDIAN／CAREGIVER]
+    Recipients --> Pref{收件人是否開啟家庭通知?}
+    Pref -->|否| End
+    Pref -->|是| Push{家屬關心提醒是否送達?}
+    Push -->|是| Sent([記錄通知成功])
+    Push -->|否| Failed([記錄失敗，不影響 missed 狀態])
+    G --> EndTaken([完成用藥確認])
 ```
 #### 掛號提醒流程
 ```mermaid
@@ -774,13 +845,20 @@ flowchart TD
     RED --> REPLY["回覆當事人紅卡"]
     RED -.-> REC["背景查詢家屬收件人"]
     REC --> R1{"是否有合格收件人？"}
-    R1 -->|否| STOP["不通報家屬"]
+    R1 -->|否| STOP["不通報家屬並保留當事人紅卡"]
     R1 -->|是| PREF{"收件人是否開啟家人通知？"}
     PREF -->|否| SKIP["略過該收件人"]
     PREF -->|是| FLEX{"家屬通報卡是否推播成功？"}
     FLEX -->|否| TEXT["改以純文字推播"]
-    
-
+    FLEX -->|是| SENT["記錄通報成功"]
+    TEXT --> TEXTRESULT{"純文字是否推播成功？"}
+    TEXTRESULT -->|是| SENT
+    TEXTRESULT -->|否| FAILED["記錄通報失敗，不宣稱已通知"]
+    STOP --> DONE(["背景通報流程結束"])
+    SKIP --> DONE
+    SENT --> DONE
+    FAILED --> DONE
+    AGENT --> NORMAL(["依一般 Agent 流程回覆"])
 ```
 ---
     
@@ -881,18 +959,112 @@ graph TD
 * 前端每 30 秒送出工作階段累計值；後端以 `$max` 冪等保存。跨 Asia/Taipei 午夜時結束舊工作階段並建立新工作階段。
 * 只有本人可回報步數；本人、GUARDIAN、CAREGIVER 可嚴格讀取每日彙總。無紀錄顯示「尚無紀錄」，不得顯示為 0 步。
 
+#### 健康量測與超限通知流程
+
 ```mermaid
 flowchart TD
-    A[新增血壓或血糖量測] --> B{本人或嚴格 SENSITIVE WRITE?}
-    B -- 否 --> X[403，不寫入]
-    B -- 是 --> C[讀取資料本人的提醒範圍]
-    C --> D[後端判定並保存 level 與 recorded_by]
-    D --> E[回應 201]
-    D --> F{警示開關啟用且超出範圍?}
-    F -- 否 --> Z[結束]
-    F -- 是 --> G{補記超過 6 小時或 30 分鐘內已通知?}
-    G -- 是 --> Z
-    G -- 否 --> H[通知本人與合格照顧者]
+    A([POST /api/health/measurements]) --> B{是否為本人?}
+    B -->|否| C[嚴格檢核 SENSITIVE WRITE]
+    C -->|拒絕| X[403，不寫入]
+    C -->|通過| V
+    B -->|是| V{輸入模型驗證是否通過?}
+    V -->|否| E422[422，不寫入]
+    V -->|是| T[讀取資料本人當下的提醒範圍]
+    T --> Classify{相關界線是否有設定?}
+    Classify -->|否| NoThreshold[level = no_threshold]
+    Classify -->|是| Compare{數值與界線比較}
+    Compare -->|高於任一上限| Above[level = above_range]
+    Compare -->|低於任一下限| Below[level = below_range]
+    Compare -->|其他| Within[level = within_range]
+    NoThreshold --> Save[保存 measurement、recorded_by 與 level]
+    Above --> Save
+    Below --> Save
+    Within --> Save
+    Save --> Response[回應 201]
+    Save -. 存檔後 .-> Enabled{HEALTH_ALERTS_ENABLED?}
+    Enabled -->|否| End([不推播])
+    Enabled -->|是| OutOfRange{above_range 或 below_range?}
+    OutOfRange -->|否| End
+    OutOfRange -->|是| Backfill{量測時間早於目前 6 小時?}
+    Backfill -->|是| End
+    Backfill -->|否| Claim{取得 30 分鐘唯一 claim?}
+    Claim -->|否| End
+    Claim -->|是| Recipients[本人 + 合格 GUARDIAN／CAREGIVER]
+    Recipients --> Preference{家屬是否開啟家庭健康通知?}
+    Preference -->|否| Skip[略過該家屬]
+    Preference -->|是| Push[依收件人語言與字級推播]
+    Skip --> NotifyEnd([通知流程結束])
+    Push --> NotifyEnd
+```
+
+#### 經期隱私、驗證與異常通知流程
+
+```mermaid
+flowchart TD
+    A([經期 API 請求]) --> B{操作者是否為資料本人?}
+    B -->|否| Deny[403；不查詢、不回傳任何 PERSONAL 資料]
+    B -->|是| C{本人性別是否為 female?}
+    C -->|否| Deny
+    C -->|是| D{日期、15 天跨度與欄位是否合法?}
+    D -->|否| Invalid[422]
+    D -->|是| E{是否與既有紀錄重疊?}
+    E -->|是| Conflict[409，不寫入]
+    E -->|否| Save[保存 PERSONAL 紀錄]
+    Save --> Compute[動態計算週期與經期天數]
+    Compute --> Anomaly{週期小於 24／大於 38 天或經期超過 8 天?}
+    Anomaly -->|否| Done([回傳結果])
+    Anomaly -->|是| Claim{同一紀錄是否首次取得通知 claim?}
+    Claim -->|否| Done
+    Claim -->|是| Push[只通知本人；文字不含敏感字詞與數值]
+    Push --> Done
+```
+
+#### LIFF 前景計步同步序列
+
+```mermaid
+sequenceDiagram
+    actor User as 使用者
+    participant Page as LIFF 計步頁
+    participant Sensor as 動作感測器
+    participant API as Health API
+    participant DB as step_sessions
+
+    User->>Page: 按下開始計步
+    Page->>Sensor: 請求權限
+    alt 拒絕或不支援
+        Sensor-->>Page: denied／unsupported
+        Page-->>User: 顯示原因，不顯示步數
+    else 允許
+        Sensor-->>Page: devicemotion 樣本
+        loop 頁面位於前景
+            Page->>Page: 估算並累加工作階段步數
+            Page->>API: 每 30 秒 PUT 累計值
+            API->>DB: 以 max 保留工作階段最大值
+            DB-->>API: 當日步數彙總
+            API-->>Page: 更新顯示
+        end
+        alt 切至背景、停止或卸載
+            Page->>API: keepalive 收尾同步
+            Page->>Page: 暫停或結束
+        else 跨 Asia/Taipei 午夜
+            Page->>API: 收尾舊工作階段
+            Page->>Page: 建立新 session_id
+        end
+    end
+```
+
+#### 家庭健康入口嚴格權限流程
+
+```mermaid
+flowchart TD
+    Page([族譜頁或健康紀錄頁]) --> Permissions[讀取 family_members.my_strict_permissions]
+    Permissions --> Read{具有 SENSITIVE READ?}
+    Read -->|否或欄位缺席| Hide[不渲染健康區塊且不發資料請求]
+    Read -->|是| Load[查詢最新血壓、血糖與今日步數]
+    Load --> Write{具有 SENSITIVE WRITE?}
+    Write -->|否| ReadOnly[只顯示可讀資料]
+    Write -->|是| Record[顯示代記血壓／血糖入口]
+    Page --> Menstrual[經期元件不接受家人對象參數]
 ```
 
 新增 collection：
@@ -1080,13 +1252,64 @@ classDiagram
 * 顯示有建立關係的成員及其健康狀態
 * 掛號提醒
 * 同一家庭群組的成員可以點擊成員卡片互相查看對話紀錄與摘要
-* 健康資訊分享須依 GENERAL、SENSITIVE、PRIVATE 權限控制可見範圍
-* 防走失定位須由家屬提出請求，並取得受照護者的明確同意；位置資料採限時授權
+* 健康資訊存取須依 GENERAL、SENSITIVE、PRIVATE、PERSONAL 與各資源嚴格規則控制；主動分享的期限、撤回與轉傳控制尚未完成
+* 防走失求救由本人 LINE 對話觸發，本人在 LIFF 授權定位；只有 `elder_lost` 合格收件人可查看限時位置與軌跡
+
+```mermaid
+flowchart TD
+    Trigger([本人由 LINE 觸發走失求救]) --> LIFF[開啟 LIFF 並說明定位用途]
+    LIFF --> Consent{瀏覽器定位是否授權?}
+    Consent -->|否| Denied[不建立分享並顯示安全建議]
+    Consent -->|是| Create[建立走失事件並通知合格收件人]
+    Create --> Upload[裝置每 20 秒嘗試上傳位置]
+    Upload --> Fresh{最後更新是否超過 3 分鐘?}
+    Fresh -->|是| Stale[標示位置過期]
+    Fresh -->|否| Track[顯示目前位置與軌跡]
+    Track --> Going[家屬可回報正在前往]
+    Stale --> Active{事件仍有效?}
+    Going --> Active
+    Active -->|繼續| Upload
+    Active -->|本人或授權流程結束| EndEvent[結束事件]
+    Active -->|已滿 2 小時| EndEvent
+    EndEvent --> Cleanup[結束 24 小時後清除位置資料]
+    Cleanup --> Done([完成])
+    Denied --> Done
+```
 
 #### 用藥安全
 * 上傳或拍攝藥袋圖片，顯示 OCR 原始文字及結構化藥品資訊
 * 使用者確認辨識內容後，才進行用藥注意事項與風險評估
 * 風險結果附上資料來源與就醫／諮詢藥師提醒，不作為診斷或處方依據
+
+```mermaid
+sequenceDiagram
+    actor User as 使用者
+    participant LIFF as 藥袋掃描介面
+    participant OCR as OCR／藥袋辨識服務
+    participant Draft as 建立者專屬短期草稿
+    participant Auth as FamilyAuthorizationService
+    participant Drug as 用藥資訊服務
+
+    User->>LIFF: 拍攝或上傳藥袋
+    LIFF->>OCR: 傳送圖片進行辨識
+    OCR-->>LIFF: OCR 原文與結構化藥品資訊
+    alt 圖片模糊或藥名有歧義
+        LIFF-->>User: 要求重拍或補充
+    else 可供核對
+        LIFF->>Draft: 建立有期限且僅建立者可讀的草稿
+        LIFF-->>User: 顯示藥名、劑量、用法供修正
+        User->>LIFF: 確認並提交
+        LIFF->>Auth: 檢核目標用藥者 GENERAL WRITE
+        alt 無權限
+            Auth-->>LIFF: 403，不提交
+        else 通過
+            Auth-->>Drug: 提交確認後藥品資料
+            Drug->>Drug: 查詢可信用途、注意事項與風險
+            Drug-->>LIFF: 說明、來源與風險提示
+            LIFF-->>User: 顯示結果及諮詢醫師／藥師提醒
+        end
+    end
+```
 ---
 ### 2.後端(FastApi)
 ---

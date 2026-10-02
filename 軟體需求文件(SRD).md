@@ -9,7 +9,7 @@ title: 軟體需求文件(SRD)
 ## 專案資訊
 - **專案名稱**：LINE 醫療資源與健康資訊系統
 - **撰寫日期**：2025/10/20
-- **目前版次**：0.6（Iteration 7 健康紀錄模組同步）
+- **目前版次**：0.7（Iteration 7 流程圖校正）
 - **發展者**：游承諺 王洪賢
 
 ---
@@ -24,6 +24,7 @@ title: 軟體需求文件(SRD)
 | 0.4  | 新增、拆分並詳述需求 | 2026/01/08 |
 | 0.5  | 同步 Iteration 7 使用案例、日常健康、用藥安全、家庭權限、防走失定位及全域 UX 需求 | 2026/10/02 |
 | 0.6  | 納入健康量測提醒範圍、經期 PERSONAL 資料、前景計步及健康警示規格 | 2026/10/02 |
+| 0.7  | 重畫總體互動、查核、醫療資源、健康、用藥、家庭權限及防走失流程圖 | 2026/10/02 |
 
 ---
 
@@ -57,42 +58,38 @@ title: 軟體需求文件(SRD)
 系統以可追溯來源、資料不足時不臆測、敏感資料最小揭露及使用者明確確認為設計原則。AI 回應不取代醫師診斷、藥師諮詢或緊急服務；跨使用者操作均須依操作者、資料擁有者、資料分類、動作及權限生效模式重新判定。
     
 ```mermaid
----
-title: 
----
-flowchart TB
-    start([加入/開啟LINE帳號])
-    stop([可由TTS讀出訊息內容])
-    issue1[輸入問題]
-    issue2[轉發文字]
-    issue3[轉發影片]
-    start -->
-    issue1 -->
-    if1-1{是否尋求醫療協助} -- true -->
-    給出解決辦法 -->
-    if1-2{是否搜尋附近資源} -- true -->
-    根據GPS定位搜尋附近醫療資源 -->
-    if1-3{是否需要實體協助} -- true -->
-    協助用戶填寫掛號資料/撥打電話 --> stop
-    
-    if1-1 --false-->
-    if1-4{是否詢問健康問題} -- true -->
-    if2-1  
-    if1-3 --false--> stop
-    
-    start --> 
-    issue2 -->
-    if2-1{文字內容是否可以驗證} --true-->
-    回傳文字內容之真偽性 --> stop
-    if2-1 --false-->
-    明確標示使用AI回應 --> stop
-    
-    start --> 
-    issue3 --> 
-    if3-1{影音格式是否可以被讀取} --true-->
-    將影音轉成逐字稿 -->
-    if2-1
-    
+flowchart TD
+    Start([使用者進入 LINE 或 LIFF]) --> Input{輸入或操作類型}
+    Input -->|一般、健康或醫療問題| Consult[理解意圖並延續對話]
+    Input -->|待查核文字或多媒體| Extract[擷取可處理的文字或語音]
+    Input -->|功能操作| Route[辨識功能、對象與必要參數]
+
+    Consult --> NeedSource{需要事實依據?}
+    NeedSource -->|是| Retrieve[檢索可信資料並附來源]
+    NeedSource -->|否| Answer[產生一般說明]
+    Retrieve --> Answer
+
+    Extract --> ValidInput{內容足以辨識主張?}
+    ValidInput -->|否| AskMore[說明限制並要求補充]
+    ValidInput -->|是| FactCheck[逐項查核主張、理由與來源]
+
+    Route --> Module{目標模組}
+    Module -->|健康紀錄| Health[執行健康紀錄流程]
+    Module -->|醫療資源| Medical[執行醫療資源流程]
+    Module -->|用藥安全| Medication[執行用藥安全流程]
+    Module -->|家庭照護| Family[執行家庭權限與安全流程]
+
+    Answer --> Risk{是否出現高風險情境?}
+    FactCheck --> Risk
+    Risk -->|是| Alert[顯示警示與適當求助管道]
+    Risk -->|否| Format[依語言與語音偏好輸出]
+    Alert --> Format
+    AskMore --> End([等待使用者補充])
+    Health --> Format
+    Medical --> Format
+    Medication --> Format
+    Family --> Format
+    Format --> End2([完成本次互動])
 ```
 
 
@@ -106,18 +103,24 @@ flowchart TB
  
 ```mermaid
 flowchart TD
-A[開啟 LINE] --> B{是否已有 LINE 帳號}
-B -- 是 --> C[登入 LINE]
-B -- 否 --> D[註冊 LINE 帳號]
-D --> C
-C --> E[轉發影片給查證系統]
-E --> F{影片格式是否支援}
-F -- 是 --> G[分析影片內容]
-G --> H[回傳正確性結果]
-F -- 否 --> I[顯示不支援格式提示]
-I --> E
-
-    
+    Start([提供待查核文字、圖片、音訊、影片或文件]) --> Supported{格式與內容可處理?}
+    Supported -->|否| Retry[指出格式、損毀或內容不清問題]
+    Retry --> EndRetry([等待重新提供或補充])
+    Supported -->|是| Extract[擷取實際可讀的文字或語音]
+    Extract --> Claim{可辨識具體健康主張?}
+    Claim -->|否| Clarify[請使用者確認或補足主張]
+    Clarify --> EndRetry
+    Claim -->|是| Search[檢索核可的可信資料]
+    Search --> Evidence{證據狀態}
+    Evidence -->|支持或反駁| Result[逐項呈現結果、理由、來源與更正]
+    Evidence -->|來源矛盾| Conflict[呈現不同證據與無法定論原因]
+    Evidence -->|資料不足或部分可驗證| Limited[標示限制，不強判整體真偽]
+    Result --> Risk{是否涉及高風險?}
+    Conflict --> Risk
+    Limited --> Risk
+    Risk -->|是| Alert[顯示風險警示與求助管道]
+    Risk -->|否| Done([完成查核])
+    Alert --> Done
 ```
     
 65 歲的老王想查詢附近的醫療院所資訊，於是透過 LINE 向系統詢問：「幫我找附近的醫院診所，並用台語告訴我。」系統在接收到問題後，判斷這是查詢附近醫療資源的需求，接著使用 GPS 定位搜尋附近的診所與醫院，並以台語語音回覆結果，例如：「好，附近 1 公里有 XX 診所，1.5 公里有 XX 醫院⋯⋯」。老王很高興不用辛辛苦苦閱讀文字，就能用聽的獲得資訊。
@@ -127,16 +130,26 @@ I --> E
 GPS訊號不穩定
 ```mermaid
 flowchart TD
-
-C[已登入line]
-C --> E[輸入問題]
-E --> F{是否尋求附近醫療資源}
-F -- 是 --> G{是否開啟GPS}
-F -- 否 --> E
-G -- 是 -->H[由TTS讀出結果]
-G -- 否 --> I[請求開啟GPS]
-I --> G
-```     
+    Start([使用者要求搜尋附近醫療資源]) --> Explain[說明定位用途]
+    Explain --> Consent{使用者是否授權定位?}
+    Consent -->|否| Alternative[說明限制並提供院所名稱或地區搜尋]
+    Consent -->|是| Locate{裝置是否取得有效位置?}
+    Locate -->|否| LocationError[顯示定位失敗與重試方式]
+    Locate -->|是| Search[依位置、院所類型與條件搜尋]
+    Search --> Result{是否有符合結果?}
+    Result -->|否| Empty[顯示查無結果並允許調整條件]
+    Result -->|是| List[顯示院所清單與距離]
+    List --> Detail[查看名稱、地址、電話及門診資訊]
+    Detail --> Action{使用者選擇}
+    Action -->|撥號| Dial[交由裝置撥號介面處理]
+    Action -->|掛號| Register[開啟院所外部掛號入口]
+    Action -->|僅查看| Done([完成查詢])
+    Dial --> Done
+    Register --> Done
+    Alternative --> Done
+    LocationError --> Done
+    Empty --> Done
+```
     
 ## <span id="section4">使用者故事地圖 (User Story Map)</span>
     
@@ -229,6 +242,65 @@ LIFF api 完成其他功能
 | FR-6.16 | 計步同步與跨日 | 計步中應每 30 秒同步工作階段累計值；停止、頁面卸載或切至背景時應執行收尾同步。後端應以同一工作階段收到的最大累計值冪等更新；跨 Asia/Taipei 午夜時應結束舊工作階段並建立新工作階段，使步數歸屬正確日期。 |
 | FR-6.17 | 步數權限與呈現 | 步數應分類為 SENSITIVE；只有本人可回報步數，本人、GUARDIAN、CAREGIVER 可依嚴格 SENSITIVE READ 查詢，MEMBER 不可存取且 shadow 不放寬。沒有當日紀錄時應顯示「尚無紀錄」，不得顯示為 0 步；權限被拒或裝置不支援時不得顯示虛構步數。 |
 | FR-6.18 | 家庭健康摘要 | 家庭介面對具嚴格 SENSITIVE READ 的成員應顯示可取得的最新血壓、血糖等級及今日步數；具嚴格 SENSITIVE WRITE 者才可看見代記入口。無讀取權或嚴格權限欄位缺席時，前端不得渲染該區塊或發出健康資料請求。 |
+
+#### 健康量測、等級與通知流程
+
+```mermaid
+flowchart TD
+    Start([本人或家屬提交血壓／血糖量測]) --> Auth{本人或具嚴格 SENSITIVE WRITE?}
+    Auth -->|否| Denied[拒絕且不寫入]
+    Auth -->|是| Validate{欄位、範圍、情境與時間有效?}
+    Validate -->|否| Invalid[顯示驗證問題且不寫入]
+    Validate -->|是| Threshold[讀取資料本人當下的自訂提醒範圍]
+    Threshold --> HasThreshold{相關界線是否有設定?}
+    HasThreshold -->|否| NoThreshold[標記 no_threshold]
+    HasThreshold -->|是| Compare{量測與已設定界線比較}
+    Compare -->|高於任一上限| Above[標記 above_range]
+    Compare -->|低於任一下限| Below[標記 below_range]
+    Compare -->|其他| Within[標記 within_range]
+    NoThreshold --> Save[保存量測、實際記錄者與歷史等級]
+    Above --> Save
+    Below --> Save
+    Within --> Save
+    Save --> Notify{開關啟用、超限且非 6 小時前補記?}
+    Notify -->|否| Done([完成並回傳紀錄])
+    Notify -->|是| Claim{同類警示 30 分鐘內是否已發送?}
+    Claim -->|是| Done
+    Claim -->|否| Recipients[通知本人與開啟通知的合格照顧者]
+    Recipients --> Done
+    Denied --> EndDenied([結束])
+    Invalid --> EndDenied
+```
+
+#### 經期與前景計步流程
+
+```mermaid
+flowchart LR
+    subgraph Menstrual[經期紀錄]
+        MStart([提交經期操作]) --> MOwner{操作者是女性本人?}
+        MOwner -->|否| MReject[拒絕；家屬與委任者皆無權]
+        MOwner -->|是| MValid{日期、跨度與重疊檢查通過?}
+        MValid -->|否| MError[回傳驗證或衝突狀態]
+        MValid -->|是| MSave[保存 PERSONAL 紀錄]
+        MSave --> MAnomaly{週期或經期天數異常?}
+        MAnomaly -->|是| MNotify[只通知本人且隱藏敏感字詞與數值]
+        MAnomaly -->|否| MEnd([完成])
+        MNotify --> MEnd
+    end
+
+    subgraph Steps[LIFF 前景計步]
+        SStart([本人按下開始]) --> SPermission{動作感測權限可用?}
+        SPermission -->|否| SUnavailable[顯示拒絕或不支援，不顯示步數]
+        SPermission -->|是| SCount[只在前景估算步數]
+        SCount --> SEvent{下一事件}
+        SEvent -->|經過 30 秒| SSync[同步工作階段累計值]
+        SSync --> SMax[後端以最大累計值冪等更新]
+        SMax --> SCount
+        SEvent -->|切至背景、卸載或停止| SFinal[收尾同步並暫停／結束]
+        SEvent -->|跨台北午夜| SNew[收尾舊工作階段並建立新工作階段]
+        SNew --> SCount
+    end
+```
 | FR-7 | 設定用藥提醒 | 本人或對實際用藥者具 GENERAL WRITE 的 GUARDIAN、CAREGIVER／有效受委任者應可建立、修改、停用及刪除用藥提醒；每次變更均應重新檢核權限，MEMBER 不得寫入。 |
 | FR-7.1 | 提醒內容確認 | 建立提醒前，系統應讓使用者確認實際用藥者、藥品及服藥時間；資訊不足時不得啟用提醒。 |
 | FR-7.2 | 定時提醒 | 到達生效提醒時間時，系統應依最新設定通知用藥者；傳送成功不得直接標示為已閱讀或已服藥。 |
@@ -251,6 +323,37 @@ LIFF api 完成其他功能
 | FR-10.3 | 用藥資訊說明 | 系統應依已確認藥品提供有可信來源的用途、用法、注意事項及易懂說明；查無資料或藥品不明時應說明無法判斷。 |
 | FR-10.4 | 藥物風險警示 | 資料支持風險時，系統應顯示風險類型、依據及諮詢醫師或藥師的建議；未出現警示不得解讀為藥品安全。 |
 | FR-10.5 | 用藥安全邊界 | 系統不得自行調整處方或保證個人化交互作用安全；原始圖片、OCR 全文及完整風險報告的跨使用者分類依 OR-02 定案。 |
+
+#### 藥袋辨識與用藥安全流程
+
+```mermaid
+flowchart TD
+    Start([拍攝或上傳藥袋]) --> OCR[擷取 OCR 原文與結構化藥品資訊]
+    OCR --> Quality{圖片與藥名是否足以辨識?}
+    Quality -->|否| Retry[要求重拍或補充，不產生確定風險]
+    Quality -->|是| Confirm[顯示藥名、劑量與用法供使用者核對／修正]
+    Confirm --> Accepted{使用者是否確認?}
+    Accepted -->|否| EndCancel([取消且不提交])
+    Accepted -->|是| Write{提交至目標用藥者資料?}
+    Write -->|是| Auth{是否具目標用藥者 GENERAL WRITE?}
+    Auth -->|否| Denied[拒絕提交]
+    Auth -->|是| Save[保存已確認藥品資料]
+    Write -->|否| Lookup[以已確認內容查詢可信用藥資料]
+    Save --> Lookup
+    Lookup --> Evidence{資料是否足以說明?}
+    Evidence -->|否| Limited[說明資料不足，不保證安全]
+    Evidence -->|是| Risk{是否有需注意風險?}
+    Risk -->|否| Info[呈現用途、用法、注意事項與來源]
+    Risk -->|是| Warning[呈現風險、依據與諮詢醫師／藥師建議]
+    Warning --> HighRisk{是否符合高風險通知政策?}
+    HighRisk -->|是| Notify[依政策通知合格家屬，不揭露完整報告]
+    HighRisk -->|否| Done([完成])
+    Notify --> Done
+    Info --> Done
+    Limited --> Done
+    Retry --> EndRetry([等待重新提供])
+    Denied --> EndRetry
+```
 
 ### 6.5 家庭連結與安全照護
 
@@ -280,6 +383,57 @@ LIFF api 完成其他功能
 | FR-16.3 | 事件通知與協作 | 系統應通知合格收件人，允許家屬回報「正在前往」，並允許授權流程結束事件；通知失敗時不得宣稱已通知。 |
 | FR-16.4 | 事件期限與刪除 | 防走失事件應於啟動後 2 小時自動結束；事件位置資料應於事件結束後 24 小時清除，不得作為長期定位歷史保存。 |
 | FR-16.5 | 定位失敗處理 | 使用者拒絕瀏覽器定位、裝置無法定位或上傳失敗時，系統應顯示可辨識的狀態及安全建議，不得顯示虛構位置。 |
+
+#### 跨使用者資料存取流程
+
+```mermaid
+flowchart TD
+    Start([跨使用者讀寫請求]) --> Identify[識別操作者、資料擁有者、資源與動作]
+    Identify --> Registered{資源與欄位是否已登記?}
+    Registered -->|否| FailClosed[Fail-closed：拒絕或遮蔽]
+    Registered -->|是| Personal{資料是否為 PERSONAL?}
+    Personal -->|是| OwnerOnly{操作者是否為資料本人?}
+    OwnerOnly -->|否| Denied[拒絕存取]
+    OwnerOnly -->|是| Allow[允許本人操作]
+    Personal -->|否| Resolve[依目標擁有者解析角色與有效委任]
+    Resolve --> Legacy{此能力是否有 legacy 對應?}
+    Legacy -->|否| Strict[直接套用嚴格角色矩陣，shadow 不放寬]
+    Legacy -->|是| Mode{目標擁有者目前模式}
+    Mode -->|enforced| Strict
+    Mode -->|shadow| LegacyRule[套用既有行為並記錄差異]
+    Strict --> Allowed{分類與動作是否允許?}
+    LegacyRule --> Allowed
+    Allowed -->|否| Denied
+    Allowed -->|是| Filter[逐欄遮蔽並執行操作]
+    Filter --> Audit[必要時留下稽核紀錄]
+    Audit --> Done([回傳最小必要資料])
+    FailClosed --> EndDenied([結束])
+    Denied --> EndDenied
+    Allow --> Done
+```
+
+#### 防走失定位流程
+
+```mermaid
+flowchart TD
+    Start([本人由 LINE 觸發走失求救]) --> Open[開啟 LIFF 並說明定位用途]
+    Open --> Consent{本人是否授權裝置定位?}
+    Consent -->|否| Reject[不建立定位分享並提供安全建議]
+    Consent -->|是| Event[建立限時走失事件並通知合格家屬]
+    Event --> Upload[裝置每 20 秒嘗試上傳位置]
+    Upload --> Fresh{最新位置是否在 3 分鐘內?}
+    Fresh -->|否| Stale[標示位置過期，不呈現為即時]
+    Fresh -->|是| Track[向合格收件人顯示位置與軌跡]
+    Track --> Response[家屬可回報正在前往]
+    Stale --> Continue{事件是否仍有效?}
+    Response --> Continue
+    Continue -->|本人／授權流程結束| EndEvent[結束事件]
+    Continue -->|已達 2 小時| EndEvent
+    Continue -->|繼續| Upload
+    EndEvent --> Delete[事件結束 24 小時後清除位置資料]
+    Delete --> Done([完成])
+    Reject --> Done
+```
 
 ### 6.6 全域使用者體驗
 
