@@ -408,7 +408,9 @@ flowchart LR
 ## ASR功能
 | 介面名稱 | 介面提供者 | 介面使用者 | 連結方式 | 輸入資料 | 輸出資料 | 介面描述 |
 | -------- | ---------- | ---------- | -------- | -------- | -------- | -------- |    
-| asrTranscribe | local-asr | n8n `HTTP Request` node | POST `http://local-asr:8200/transcribe` | multipart `file`, optional `language`, `task` | `text`, `language`, `duration`, `segments`, `model`, `backend` | 音訊/影片檔轉文字；短音訊可走 Breeze，長音訊或指定時走 faster-whisper |
+| taigiStt | Taigi AI Labs 外部 API | CARE Backend | POST `{TAIGI_BASE_URL}/taigiSTT/stt_best_billing`，Header `x-api-key` | multipart `voiceFile`；CARE 先將 LINE 音訊解碼成 16 kHz mono WAV，長音訊依停頓切段 | JSON `best` | 台語語音專用 STT；與 Google Gemini 華語聽寫平行執行，回來後由語言判斷選用較合適逐字稿 |
+| taigiTts | Taigi AI Labs 外部 API | CARE Backend | POST `{TAIGI_BASE_URL}/taigiStripe/synth_convert_api_limit_gender_v6`，Header `x-api-key` | JSON `text`, `voice_label`, `speed`, `user` | WAV audio | 台語語音回覆；CARE 收到 WAV 後轉成 LINE 可播放音檔 |
+| asrTranscribe | local-asr | n8n `HTTP Request` node | POST `http://local-asr:8200/transcribe` | multipart `file`, optional `language`, `task` | `text`, `language`, `duration`, `segments`, `model`, `backend` | 一般音訊/影片檔轉文字與台語 API 失敗時的備援；目前預設走 faster-whisper |
 | asrHealth | local-asr | 開發者 / health check | GET `http://localhost:8200/health` | 無 | `ok`, `backend`, `model`, `long_audio_backend`, `long_audio_threshold_seconds` | 檢查 ASR 服務狀態與目前模型設定 |
 ## 文件解析
 | 介面名稱 | 介面提供者 | 介面使用者 | 連結方式 | 輸入資料 | 輸出資料 | 介面描述 |
@@ -452,10 +454,15 @@ flowchart TD
     Parser[local-parser<br/>FastAPI :8100]
   end
 
+  Taigi[Taigi AI Labs<br/>台語 STT/TTS 外部 API]
+
   Workflow --> Extract[Code<br/>解析檔名與副檔名]
   Extract --> Switch{Switch<br/>依副檔名分類}
 
-  Switch -->|mp3 / wav / m4a / flac / ogg / opus| ASRReq[HTTP Request<br/>POST local-asr:8200/transcribe]
+  Switch -->|台語語音<br/>mp3 / wav / m4a / flac / ogg / opus| TaigiReq[CARE Backend<br/>轉 WAV / 切段 / x-api-key]
+  TaigiReq --> Taigi
+  Taigi --> Respond
+  Switch -->|一般語音或台語失敗備援<br/>mp3 / wav / m4a / flac / ogg / opus| ASRReq[HTTP Request<br/>POST local-asr:8200/transcribe]
   Switch -->|mp4 / mov / avi / mkv / webm| ASRReq
 
   Switch -->|jpg / jpeg / png / gif / bmp / tiff / webp / svg| Gemini[Gemini Image Analyze<br/>OCR]
@@ -472,15 +479,22 @@ flowchart TD
 #### ASR 台語處理流程
 ```mermaid
 flowchart TD
-  Req[POST /transcribe] --> Duration[ffprobe 取得音訊長度]
-  Duration --> Decision{ASR_BACKEND == faster-whisper<br/>或音訊長度 > threshold?}
+  Voice[LINE 語音/音檔] --> Download[CARE Backend 下載暫存]
+  Download --> Decode[PyAV 解碼成 16 kHz mono PCM]
+  Decode --> Split[依停頓切段<br/>每段約 25 秒內]
+  Split --> Parallel{平行辨識}
 
-  Decision -->|是| FW[faster-whisper<br/>model: WHISPER_MODEL]
-  Decision -->|否| Breeze[Breeze ASR<br/>model: ASR_MODEL_ID]
+  Parallel --> Taigi[Taigi AI Labs STT<br/>外部 API stt_best_billing]
+  Parallel --> Gemini[Google Gemini STT<br/>華語/一般語音]
 
-  FW --> Result[回傳 text / segments / backend / model]
-  Breeze --> Result
+  Taigi --> Choose[依辨識內容與語言判斷選擇逐字稿]
+  Gemini --> Choose
+  Choose -->|成功| Result[回傳 text 並記錄 detected_speech_language]
+  Choose -->|逾時/失敗/無內容| Fallback[n8n local-asr / faster-whisper 備援]
+  Fallback --> Result
 ```
+
+台語 STT／TTS 與 Taigi AI Labs 合作，透過對方提供的外部 API 與 API key 呼叫。CARE 不在本機載入台語模型權重；本機 `local-asr` 保留為一般語音與故障備援。音訊檔只在處理期間暫存，成功或失敗後清除；若送交 Taigi AI Labs，需依合作契約確認處理地區、保存期限、速率限制、人工檢視及模型訓練政策。
     
 #### 使用者對話紀錄儲存流程:
 ![User Interaction History-2026-06-16-133002](https://hackmd.io/_uploads/ByJeWRAbGg.png)
@@ -1395,7 +1409,11 @@ sequenceDiagram
 * 每日健康資訊僅可使用已納入可信知識庫且保留來源欄位的內容
 ---    
 #### 台語
-* 與 Taigi Ai Lab 合作，使用對方提供之 api key
+* 與 Taigi AI Labs 合作，使用對方提供之外部 API 與 API key 提供台語 STT/TTS。
+* 台語 STT 呼叫 `/taigiSTT/stt_best_billing`；CARE 會先將 LINE 音訊轉為 16 kHz mono WAV，長音訊依停頓切段後送出。
+* 台語 TTS 呼叫 `/taigiStripe/synth_convert_api_limit_gender_v6`；回傳 WAV 後由 CARE 轉成 LINE 可播放格式。
+* `TAIGI_API_KEY` 未設定、API 逾時、429 或 5xx 失敗時，台語辨識降級為 Gemini 或 local-asr；台語語音回覆失敗時降級為既有華語 TTS。
+* 台語外部 API 會接收使用者語音或待合成文字，正式文件須揭露 Taigi AI Labs 為第三方／受託處理者，並確認資料保存、處理地區、模型訓練及人工檢視政策。
 ---
 ### 3.資料庫
 ---
