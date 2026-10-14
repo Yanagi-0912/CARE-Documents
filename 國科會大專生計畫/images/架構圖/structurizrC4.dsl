@@ -104,6 +104,8 @@ workspace "CARE" "Clinical Assistance & Resource Engine C4 model" {
         care.backend -> kubernetes "部署、服務發現、PVC 與 Secret" "Kubernetes"
 
         care.frontend -> care.backend.liffApi "登入、讀寫設定與功能 API" "HTTPS/JSON"
+        line -> care.backend.lineWebhook "Webhook 事件" "HTTPS"
+        care.backend.lineWebhook -> line "回覆文字、Flex 與語音訊息" "HTTPS"
         care.backend.lineWebhook -> care.backend.conversation "文字與 postback 對話事件"
         care.backend.lineWebhook -> care.backend.mediaProcessor "圖片、語音、影片、文件事件"
         care.backend.lineWebhook -> care.backend.lost "位置與防走失事件"
@@ -120,6 +122,7 @@ workspace "CARE" "Clinical Assistance & Resource Engine C4 model" {
         care.backend.speech -> gemini "華語/一般語音 STT"
         care.backend.speech -> taigi "台語 STT/TTS 外部 API"
         care.backend.speech -> care.localAsr "Taigi/Gemini 失敗時備援"
+        care.backend.speech -> care.backend.conversation "傳遞逐字稿與辨識語言"
         care.backend.rag -> care.mongo "Atlas Search / Vector Search"
         care.backend.rag -> care.pgvector "向量檢索"
         care.backend.rag -> cohere "精排"
@@ -154,7 +157,7 @@ workspace "CARE" "Clinical Assistance & Resource Engine C4 model" {
             autolayout lr
         }
 
-        dynamic care "TaiwaneseSpeechFlow" "台語語音輸入與回覆流程。" {
+        dynamic care.backend "TaiwaneseSpeechFlow" "台語語音輸入與回覆流程。" {
             user -> line "傳送台語語音"
             line -> care.backend.lineWebhook "Webhook audio event"
             care.backend.lineWebhook -> care.backend.mediaProcessor "下載 LINE 音訊並暫存"
@@ -168,7 +171,7 @@ workspace "CARE" "Clinical Assistance & Resource Engine C4 model" {
             care.backend.ttsClient -> taigi "台語 TTS"
             care.backend.ttsClient -> care.tts "轉成 LINE 可播放音檔"
             care.tts -> care.ttsStorage "保存 mp3"
-            care.backend -> line "回覆文字與音檔 URL"
+            care.backend.lineWebhook -> line "回覆文字與音檔 URL"
             line -> user "顯示 Flex / 播放語音"
             autolayout lr
         }
